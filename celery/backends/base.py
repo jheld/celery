@@ -33,7 +33,6 @@ from celery.five import items
 from celery.result import (
     GroupResult, ResultBase, allow_join_result, result_from_tuple,
 )
-from celery.utils import timeutils
 from celery.utils.functional import LRUCache
 from celery.utils.log import get_logger
 from celery.utils.serialization import (
@@ -168,11 +167,11 @@ class BaseBackend(object):
 
     def exception_to_python(self, exc):
         """Convert serialized exception to Python exception."""
-        if self.serializer in EXCEPTION_ABLE_CODECS:
-            return get_pickled_exception(exc)
-        elif not isinstance(exc, BaseException):
-            return create_exception_cls(
+        if not isinstance(exc, BaseException):
+            exc = create_exception_cls(
                 from_utf8(exc['exc_type']), __name__)(exc['exc_message'])
+        if self.serializer in EXCEPTION_ABLE_CODECS:
+            exc = get_pickled_exception(exc)
         return exc
 
     def prepare_value(self, result):
@@ -229,7 +228,7 @@ class BaseBackend(object):
         if value is None:
             value = self.app.conf.CELERY_TASK_RESULT_EXPIRES
         if isinstance(value, timedelta):
-            value = timeutils.timedelta_seconds(value)
+            value = value.total_seconds()
         if value is not None and type:
             return type(value)
         return value
@@ -440,14 +439,16 @@ class KeyValueStoreBackend(BaseBackend):
     def _mget_to_results(self, values, keys):
         if hasattr(values, 'items'):
             # client returns dict so mapping preserved.
-            return dict((self._strip_prefix(k), self.decode(v))
-                        for k, v in items(values)
-                        if v is not None)
+            return {
+                self._strip_prefix(k): self.decode(v)
+                for k, v in items(values) if v is not None
+            }
         else:
             # client returns list so need to recreate mapping.
-            return dict((bytes_to_str(keys[i]), self.decode(value))
-                        for i, value in enumerate(values)
-                        if value is not None)
+            return {
+                bytes_to_str(keys[i]): self.decode(value)
+                for i, value in enumerate(values) if value is not None
+            }
 
     def get_many(self, task_ids, timeout=None, interval=0.5, no_ack=True,
                  READY_STATES=states.READY_STATES):
@@ -472,7 +473,7 @@ class KeyValueStoreBackend(BaseBackend):
             r = self._mget_to_results(self.mget([self.get_key_for_task(k)
                                                  for k in keys]), keys)
             cache.update(r)
-            ids.difference_update(set(bytes_to_str(v) for v in r))
+            ids.difference_update({bytes_to_str(v) for v in r})
             for key, value in items(r):
                 yield bytes_to_str(key), value
             if timeout and iterations * interval >= timeout:

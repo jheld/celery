@@ -1110,6 +1110,14 @@ compression schemes registered in the Kombu compression registry.
 
 The default is to send uncompressed messages.
 
+.. setting:: CELERY_TASK_PROTOCOL
+
+CELERY_TASK_PROTOCOL
+~~~~~~~~~~~~~~~~~~~~
+
+Default task message protocol version.
+Supports protocols: 1 and 2 (default is 1 for backwards compatibility).
+
 .. setting:: CELERY_TASK_RESULT_EXPIRES
 
 CELERY_TASK_RESULT_EXPIRES
@@ -1509,7 +1517,8 @@ Events
 CELERY_SEND_EVENTS
 ~~~~~~~~~~~~~~~~~~
 
-Send events so the worker can be monitored by tools like `celerymon`.
+Send task-related events so that tasks can be monitored using tools like
+`flower`.  Sets the default value for the workers :option:`-E` argument.
 
 .. setting:: CELERY_SEND_TASK_SENT_EVENT
 

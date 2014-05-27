@@ -363,10 +363,6 @@ class test_tasks(TasksCase):
         self.mytask.app.Task._app = None
         self.assertIn('unbound', repr(self.mytask.app.Task, ))
 
-    def test_bind_no_magic_kwargs(self):
-        self.mytask.accept_magic_kwargs = None
-        self.mytask.bind(self.mytask.app)
-
     def test_annotate(self):
         with patch('celery.app.task.resolve_all_annotations') as anno:
             anno.return_value = [{'FOO': 'BAR'}]
@@ -385,11 +381,6 @@ class test_tasks(TasksCase):
             self.mytask.request.clear()
         finally:
             self.mytask.pop_request()
-
-    def test_send_task_sent_event(self):
-        with self.app.connection() as conn:
-            self.app.conf.CELERY_SEND_TASK_SENT_EVENT = True
-            self.assertTrue(self.app.amqp.TaskProducer(conn).send_sent_event)
 
     def test_update_state(self):
 

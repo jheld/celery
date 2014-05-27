@@ -9,7 +9,7 @@
     This module shouldn't be used directly.
 
 """
-from __future__ import absolute_import, print_function
+from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 import sys
@@ -19,31 +19,6 @@ import weakref
 from celery.local import Proxy
 from celery.utils.threads import LocalStack
 
-try:
-    from weakref import WeakSet as AppSet
-except ImportError:  # XXX Py2.6
-
-    class AppSet(object):  # noqa
-
-        def __init__(self):
-            self._refs = set()
-
-        def add(self, app):
-            self._refs.add(weakref.ref(app))
-
-        def __iter__(self):
-            dirty = []
-            try:
-                for appref in self._refs:
-                    app = appref()
-                    if app is None:
-                        dirty.append(appref)
-                    else:
-                        yield app
-            finally:
-                while dirty:
-                    self._refs.discard(dirty.pop())
-
 __all__ = ['set_default_app', 'get_current_app', 'get_current_task',
            'get_current_worker_task', 'current_app', 'current_task',
            'connect_on_app_finalize']
@@ -52,7 +27,12 @@ __all__ = ['set_default_app', 'get_current_app', 'get_current_task',
 default_app = None
 
 #: List of all app instances (weakrefs), must not be used directly.
-_apps = AppSet()
+_apps = weakref.WeakSet()
+
+#: global set of functions to call whenever a new app is finalized
+#: E.g. Shared tasks, and builtin tasks are created
+#: by adding callbacks here.
+_on_app_finalizers = set()
 
 #: global set of functions to call whenever a new app is finalized
 #: E.g. Shared tasks, and builtin tasks are created
@@ -102,10 +82,8 @@ def _get_current_app():
         #: creates the global fallback app instance.
         from celery.app import Celery
         set_default_app(Celery(
-            'default',
+            'default', fixups=[], set_as_current=False,
             loader=os.environ.get('CELERY_LOADER') or 'default',
-            fixups=[],
-            set_as_current=False, accept_magic_kwargs=True,
         ))
     return _tls.current_app or default_app
 

@@ -19,7 +19,6 @@ import datetime
 
 from collections import Callable
 from functools import partial, wraps
-from inspect import getargspec
 from pprint import pprint
 
 from kombu.entity import Exchange, Queue
@@ -176,8 +175,8 @@ def lpmerge(L, R):
     """In place left precedent dictionary merge.
 
     Keeps values from `L`, if the value in `R` is :const:`None`."""
-    set = L.__setitem__
-    [set(k, v) for k, v in items(R) if v is not None]
+    setitem = L.__setitem__
+    [setitem(k, v) for k, v in items(R) if v is not None]
     return L
 
 
@@ -187,14 +186,6 @@ def is_iterable(obj):
     except TypeError:
         return False
     return True
-
-
-def fun_takes_kwargs(fun, kwlist=[]):
-    # deprecated
-    S = getattr(fun, 'argspec', getargspec(fun))
-    if S.keywords is not None:
-        return kwlist
-    return [kw for kw in kwlist if kw in S.args]
 
 
 def isatty(fh):
@@ -214,7 +205,7 @@ def cry(out=None, sepchr='=', seplen=49):  # pragma: no cover
 
     # get a map of threads by their ID so we can print their names
     # during the traceback dump
-    tmap = dict((t.ident, t) for t in threading.enumerate())
+    tmap = {t.ident: t for t in threading.enumerate()}
 
     sep = sepchr * seplen
     for tid, frame in items(sys._current_frames()):
@@ -276,9 +267,10 @@ def jsonify(obj,
     elif isinstance(obj, (tuple, list)):
         return [_jsonify(v) for v in obj]
     elif isinstance(obj, dict):
-        return dict((k, _jsonify(v, key=k))
-                    for k, v in items(obj)
-                    if (keyfilter(k) if keyfilter else 1))
+        return {
+            k: _jsonify(v, key=k) for k, v in items(obj)
+            if (keyfilter(k) if keyfilter else 1)
+        }
     elif isinstance(obj, datetime.datetime):
         # See "Date Time String Format" in the ECMA-262 specification.
         r = obj.isoformat()
@@ -351,7 +343,7 @@ def default_nodename(hostname):
 def node_format(s, nodename, **extra):
     name, host = nodesplit(nodename)
     return host_format(
-        s, host, n=name or NODENAME_DEFAULT, **extra)
+        s, host, name or NODENAME_DEFAULT, **extra)
 
 
 def _fmt_process_index(prefix='', default='0'):
@@ -361,9 +353,10 @@ def _fmt_process_index(prefix='', default='0'):
 _fmt_process_index_with_prefix = partial(_fmt_process_index, '-', '')
 
 
-def host_format(s, host=None, **extra):
+def host_format(s, host=None, name=None, **extra):
     host = host or socket.gethostname()
-    name, _, domain = host.partition('.')
+    hname, _, domain = host.partition('.')
+    name = name or hname
     keys = dict({
         'h': host, 'n': name, 'd': domain,
         'i': _fmt_process_index, 'I': _fmt_process_index_with_prefix,
@@ -393,5 +386,5 @@ from .imports import (          # noqa
     instantiate, import_from_cwd
 )
 from .functional import chunks, noop                    # noqa
-from kombu.utils import cached_property, kwdict, uuid   # noqa
+from kombu.utils import cached_property, uuid   # noqa
 gen_unique_id = uuid

@@ -13,19 +13,19 @@ Examples
 
     # Pidfiles and logfiles are stored in the current directory
     # by default.  Use --pidfile and --logfile argument to change
-    # this.  The abbreviation %N will be expanded to the current
+    # this.  The abbreviation %n will be expanded to the current
     # node name.
-    $ celery multi start Leslie -E --pidfile=/var/run/celery/%N.pid
-                                    --logfile=/var/log/celery/%N.log
+    $ celery multi start Leslie -E --pidfile=/var/run/celery/%n.pid
+                                   --logfile=/var/log/celery/%n%I.log
 
 
     # You need to add the same arguments when you restart,
     # as these are not persisted anywhere.
-    $ celery multi restart Leslie -E --pidfile=/var/run/celery/%N.pid
-                                     --logfile=/var/run/celery/%N.log
+    $ celery multi restart Leslie -E --pidfile=/var/run/celery/%n.pid
+                                     --logfile=/var/run/celery/%n%I.log
 
     # To stop the node, you need to specify the same pidfile.
-    $ celery multi stop Leslie --pidfile=/var/run/celery/%N.pid
+    $ celery multi stop Leslie --pidfile=/var/run/celery/%n.pid
 
     # 3 workers, with 3 processes each
     $ celery multi start 3 -c 3
@@ -46,6 +46,9 @@ Examples
 
     # specify fully qualified nodenames
     $ celery multi start foo@worker.example.com bar@worker.example.com -c 3
+
+    # fully qualified nodenames but using the current hostname
+    $ celery multi start foo@%h bar@%h
 
     # Advanced example starting 10 workers in the background:
     #   * Three of the workers processes the images and video queue
@@ -100,25 +103,26 @@ import signal
 import socket
 import sys
 
-from collections import defaultdict, namedtuple
+from collections import OrderedDict, defaultdict, namedtuple
+from functools import partial
 from subprocess import Popen
 from time import sleep
 
 from kombu.utils import cached_property
-from kombu.utils.compat import OrderedDict
 from kombu.utils.encoding import from_utf8
 
 from celery import VERSION_BANNER
 from celery.five import items
 from celery.platforms import Pidfile, IS_WINDOWS
-from celery.utils import term, nodesplit
+from celery.utils import term
+from celery.utils import host_format, node_format, nodesplit
 from celery.utils.text import pluralize
 
 __all__ = ['MultiTool']
 
-SIGNAMES = set(sig for sig in dir(signal)
-               if sig.startswith('SIG') and '_' not in sig)
-SIGMAP = dict((getattr(signal, name), name) for name in SIGNAMES)
+SIGNAMES = {sig for sig in dir(signal)
+            if sig.startswith('SIG') and '_' not in sig}
+SIGMAP = {getattr(signal, name): name for name in SIGNAMES}
 
 USAGE = """\
 usage: {prog_name} start <node1 node2 nodeN|range> [worker options]
@@ -247,8 +251,8 @@ class MultiTool(object):
         self.retcode = int(any(retcodes))
 
     def with_detacher_default_options(self, p):
-        _setdefaultopt(p.options, ['--pidfile', '-p'], '%N.pid')
-        _setdefaultopt(p.options, ['--logfile', '-f'], '%N.log')
+        _setdefaultopt(p.options, ['--pidfile', '-p'], '%n.pid')
+        _setdefaultopt(p.options, ['--logfile', '-f'], '%n%I.log')
         p.options.setdefault(
             '--cmd',
             '-m {0}'.format(celery_exe('worker', '--detach')),
@@ -320,7 +324,7 @@ class MultiTool(object):
             self.note('')
 
     def getpids(self, p, cmd, callback=None):
-        _setdefaultopt(p.options, ['--pidfile', '-p'], '%N.pid')
+        _setdefaultopt(p.options, ['--pidfile', '-p'], '%n.pid')
 
         nodes = []
         for node in multi_args(p, cmd):
@@ -491,25 +495,28 @@ def multi_args(p, cmd='celery worker', append='', prefix='', suffix=''):
                 raise KeyError('No node at index %r' % (ns_name, ))
 
     for name in names:
-        this_suffix = suffix
+        hostname = suffix
         if '@' in name:
-            this_name = options['-n'] = name
-            nodename, this_suffix = nodesplit(name)
-            name = nodename
+            nodename = options['-n'] = host_format(name)
+            shortname, hostname = nodesplit(nodename)
+            name = shortname
         else:
-            nodename = '%s%s' % (prefix, name)
-            this_name = options['-n'] = '%s@%s' % (nodename, this_suffix)
-        expand = abbreviations({'%h': this_name,
-                                '%n': name,
-                                '%N': nodename,
-                                '%d': this_suffix})
+            shortname = '%s%s' % (prefix, name)
+            nodename = options['-n'] = host_format(
+                '{0}@{1}'.format(shortname, hostname),
+            )
+
+        expand = partial(
+            node_format, nodename=nodename, N=shortname, d=hostname,
+            h=nodename, i='%i', I='%I',
+        )
         argv = ([expand(cmd)] +
                 [format_opt(opt, expand(value))
                  for opt, value in items(p.optmerge(name, options))] +
                 [passthrough])
         if append:
             argv.append(expand(append))
-        yield multi_args_t(this_name, argv, expand, name)
+        yield multi_args_t(nodename, argv, expand, name)
 
 
 class NamespacedOptionParser(object):
@@ -589,18 +596,6 @@ def parse_ns_range(ns, ranges=False):
         else:
             ret.append(space)
     return ret
-
-
-def abbreviations(mapping):
-
-    def expand(S):
-        ret = S
-        if S is not None:
-            for short_opt, long_opt in items(mapping):
-                ret = ret.replace(short_opt, long_opt)
-        return ret
-
-    return expand
 
 
 def findsig(args, default=signal.SIGTERM):

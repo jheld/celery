@@ -146,6 +146,7 @@ NAMESPACES = {
         'SEND_TASK_ERROR_EMAILS': Option(False, type='bool'),
         'SEND_TASK_SENT_EVENT': Option(False, type='bool'),
         'STORE_ERRORS_EVEN_IF_IGNORED': Option(False, type='bool'),
+        'TASK_PROTOCOL': Option(1, type='int'),
         'TASK_PUBLISH_RETRY': Option(True, type='bool'),
         'TASK_PUBLISH_RETRY_POLICY': Option({
             'max_retries': 3,
@@ -233,7 +234,7 @@ def flatten(d, ns=''):
                 stack.append((name + key + '_', value))
             else:
                 yield name + key, value
-DEFAULTS = dict((key, value.default) for key, value in flatten(NAMESPACES))
+DEFAULTS = {key: value.default for key, value in flatten(NAMESPACES)}
 
 
 def find_deprecated_settings(source):

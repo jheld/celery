@@ -71,8 +71,8 @@ The :program:`celery worker` command (previously known as ``celeryd``)
 
 .. cmdoption:: -E, --events
 
-    Send events that can be captured by monitors like :program:`celery events`,
-    `celerymon`, and others.
+    Send task-related events that can be captured by monitors like
+    :program:`celery events`, `celerymon`, and others.
 
 .. cmdoption:: --without-gossip
 
@@ -175,7 +175,7 @@ class worker(Command):
         # parse options before detaching so errors can be handled.
         options, args = self.prepare_args(
             *self.parse_options(prog_name, argv, command))
-        self.maybe_detach([command] + sys.argv[1:])
+        self.maybe_detach([command] + argv)
         return self(*args, **options)
 
     def maybe_detach(self, argv, dopts=['-D', '--detach']):
@@ -205,12 +205,14 @@ class worker(Command):
                     loglevel, '|'.join(
                         l for l in LOG_LEVELS if isinstance(l, string_t))))
 
-        return self.app.Worker(
+        worker = self.app.Worker(
             hostname=hostname, pool_cls=pool_cls, loglevel=loglevel,
             logfile=logfile,  # node format handled by celery.app.log.setup
             pidfile=self.node_format(pidfile, hostname),
             state_db=self.node_format(state_db, hostname), **kwargs
-        ).start()
+        )
+        worker.start()
+        return worker.exitcode
 
     def with_pool_option(self, argv):
         # this command support custom pools

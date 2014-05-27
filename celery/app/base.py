@@ -13,7 +13,6 @@ import threading
 import warnings
 
 from collections import defaultdict, deque
-from contextlib import contextmanager
 from copy import deepcopy
 from operator import attrgetter
 
@@ -34,9 +33,10 @@ from celery.exceptions import AlwaysEagerIgnored, ImproperlyConfigured
 from celery.five import items, values
 from celery.loaders import get_loader_cls
 from celery.local import PromiseProxy, maybe_evaluate
+from celery.utils.dispatch import Signal
 from celery.utils.functional import first, maybe_list
 from celery.utils.imports import instantiate, symbol_by_name
-from celery.utils.objects import mro_lookup
+from celery.utils.objects import FallbackContext, mro_lookup
 
 from .annotations import prepare as prepare_annotations
 from .defaults import DEFAULTS, find_deprecated_settings
@@ -117,11 +117,22 @@ class Celery(object):
     _pool = None
     builtin_fixups = BUILTIN_FIXUPS
 
+    #: Signal sent when app is loading configuration.
+    on_configure = None
+
+    #: Signal sent after app has prepared the configuration.
+    on_after_configure = None
+
+    #: Signal sent after app has been finalized.
+    on_after_finalize = None
+
+    #: ignored
+    accept_magic_kwargs = False
+
     def __init__(self, main=None, loader=None, backend=None,
                  amqp=None, events=None, log=None, control=None,
-                 set_as_current=True, accept_magic_kwargs=False,
-                 tasks=None, broker=None, include=None, changes=None,
-                 config_source=None, fixups=None, task_cls=None,
+                 set_as_current=True, tasks=None, broker=None, include=None,
+                 changes=None, config_source=None, fixups=None, task_cls=None,
                  autofinalize=True, **kwargs):
         self.clock = LamportClock()
         self.main = main
@@ -134,7 +145,6 @@ class Celery(object):
         self.task_cls = task_cls or self.task_cls
         self.set_as_current = set_as_current
         self.registry_cls = symbol_by_name(self.registry_cls)
-        self.accept_magic_kwargs = accept_magic_kwargs
         self.user_options = defaultdict(set)
         self.steps = defaultdict(set)
         self.autofinalize = autofinalize
@@ -170,6 +180,13 @@ class Celery(object):
 
         if self.set_as_current:
             self.set_current()
+
+        # Signals
+        if self.on_configure is None:
+            # used to be a method pre 3.2
+            self.on_configure = Signal()
+        self.on_after_configure = Signal()
+        self.on_after_finalize = Signal()
 
         self.on_init()
         _register_app(self)
@@ -222,12 +239,6 @@ class Celery(object):
                     cons = lambda app: app._task_from_fun(fun, **opts)
                     cons.__name__ = fun.__name__
                     connect_on_app_finalize(cons)
-                if self.accept_magic_kwargs:  # compat mode
-                    task = self._task_from_fun(fun, **opts)
-                    if filter:
-                        task = filter(task)
-                    return task
-
                 if self.finalized or opts.get('_force_evaluate'):
                     ret = self._task_from_fun(fun, **opts)
                 else:
@@ -259,7 +270,6 @@ class Celery(object):
 
         T = type(fun.__name__, (base, ), dict({
             'app': self,
-            'accept_magic_kwargs': False,
             'run': fun if bind else staticmethod(fun),
             '_decorated': True,
             '__doc__': fun.__doc__,
@@ -282,6 +292,8 @@ class Celery(object):
 
                 for task in values(self._tasks):
                     task.bind(self)
+
+                self.on_after_finalize.send(sender=self)
 
     def add_defaults(self, fun):
         if not callable(fun):
@@ -330,32 +342,35 @@ class Celery(object):
                   eta=None, task_id=None, producer=None, connection=None,
                   router=None, result_cls=None, expires=None,
                   publisher=None, link=None, link_error=None,
-                  add_to_parent=True, reply_to=None, expected_replies=None,
-                  **options):
+                  add_to_parent=True, group_id=None, retries=0, chord=None,
+                  reply_to=None, time_limit=None, soft_time_limit=None,
+                  root_id=None, parent_id=None, **options):
+        amqp = self.amqp
         task_id = task_id or uuid()
         producer = producer or publisher  # XXX compat
-        router = router or self.amqp.router
+        router = router or amqp.router
         conf = self.conf
         if conf.CELERY_ALWAYS_EAGER:  # pragma: no cover
             warnings.warn(AlwaysEagerIgnored(
                 'CELERY_ALWAYS_EAGER has no effect on send_task',
             ), stacklevel=2)
         options = router.route(options, name, args, kwargs)
+
+        message = amqp.create_task_message(
+            task_id, name, args, kwargs, countdown, eta, group_id,
+            expires, retries, chord,
+            maybe_list(link), maybe_list(link_error),
+            reply_to or self.oid, time_limit, soft_time_limit,
+            self.conf.CELERY_SEND_TASK_SENT_EVENT,
+            root_id, parent_id,
+        )
+
         if connection:
-            producer = self.amqp.TaskProducer(connection)
+            producer = amqp.Producer(connection)
         with self.producer_or_acquire(producer) as P:
             self.backend.on_task_call(P, task_id)
-            task_id = P.publish_task(
-                name, args, kwargs, countdown=countdown, eta=eta,
-                task_id=task_id, expires=expires,
-                callbacks=maybe_list(link), errbacks=maybe_list(link_error),
-                reply_to=reply_to or self.oid, **options
-            )
-        if self.backend.supports_multi:
-            result = (result_cls or self.MultiAsyncResult)(task_id,
-                                                           expected_replies)
-        else:
-            result = (result_cls or self.AsyncResult)(task_id)
+            amqp.send_task_message(P, name, message, **options)
+        result = (result_cls or self.AsyncResult)(task_id)
         if add_to_parent:
             parent = get_current_worker_task()
             if parent:
@@ -390,27 +405,20 @@ class Celery(object):
         )
     broker_connection = connection
 
-    @contextmanager
-    def connection_or_acquire(self, connection=None, pool=True,
-                              *args, **kwargs):
-        if connection:
-            yield connection
-        else:
-            if pool:
-                with self.pool.acquire(block=True) as connection:
-                    yield connection
-            else:
-                with self.connection() as connection:
-                    yield connection
+    def _acquire_connection(self, pool=True):
+        """Helper for :meth:`connection_or_acquire`."""
+        if pool:
+            return self.pool.acquire(block=True)
+        return self.connection()
+
+    def connection_or_acquire(self, connection=None, pool=True, *_, **__):
+        return FallbackContext(connection, self._acquire_connection, pool=pool)
     default_connection = connection_or_acquire  # XXX compat
 
-    @contextmanager
     def producer_or_acquire(self, producer=None):
-        if producer:
-            yield producer
-        else:
-            with self.amqp.producer_pool.acquire(block=True) as producer:
-                yield producer
+        return FallbackContext(
+            producer, self.amqp.producer_pool.acquire, block=True,
+        )
     default_producer = producer_or_acquire  # XXX compat
 
     def prepare_config(self, c):
@@ -453,12 +461,12 @@ class Celery(object):
             self.loader)
         return backend(app=self, url=url)
 
-    def on_configure(self):
-        """Callback calld when the app loads configuration"""
-        pass
-
     def _get_config(self):
-        self.on_configure()
+        if isinstance(self.on_configure, Signal):
+            self.on_configure.send(sender=self)
+        else:
+            # used to be a method pre 3.2
+            self.on_configure()
         if self._config_source:
             self.loader.config_from_object(self._config_source)
         self.configured = True
@@ -472,6 +480,7 @@ class Celery(object):
         if self._preconf:
             for key, value in items(self._preconf):
                 setattr(s, key, value)
+        self.on_after_configure.send(sender=self, source=s)
         return s
 
     def _after_fork(self, obj_):
@@ -558,7 +567,6 @@ class Celery(object):
             'events': self.events_cls,
             'log': self.log_cls,
             'control': self.control_cls,
-            'accept_magic_kwargs': self.accept_magic_kwargs,
             'fixups': self.fixups,
             'config_source': self._config_source,
             'task_cls': self.task_cls,
@@ -569,7 +577,7 @@ class Celery(object):
         return (self.main, self.conf.changes,
                 self.loader_cls, self.backend_cls, self.amqp_cls,
                 self.events_cls, self.log_cls, self.control_cls,
-                self.accept_magic_kwargs, self._config_source)
+                False, self._config_source)
 
     @cached_property
     def Worker(self):

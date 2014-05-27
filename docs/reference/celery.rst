@@ -382,9 +382,17 @@ and creating Celery applications.
         Finalizes the app by loading built-in tasks,
         and evaluating pending task decorators
 
-    .. method:: Celery.on_configure()
+    .. data:: on_configure
 
-        Optional callback for when the first time the configured is required.
+        Signal sent when app is loading configuration.
+
+    .. data:: on_after_configure
+
+        Signal sent after app has prepared the configuration.
+
+    .. data:: on_after_finalize
+
+        Signal sent after app has been finalized.
 
     .. attribute:: Celery.Pickler
 
@@ -462,7 +470,7 @@ See :ref:`guide-canvas` for more about creating task workflows.
 
     Signatures can also be created from tasks::
 
-        >>> add.subtask(args=(), kwargs={}, options={})
+        >>> add.signature(args=(), kwargs={}, options={})
 
     or the ``.s()`` shortcut::
 
